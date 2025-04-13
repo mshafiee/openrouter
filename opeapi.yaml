@@ -1,0 +1,1922 @@
+openapi: 3.0.0
+info:
+  title: OpenRouter API
+  version: 1.0.0
+  description: >-
+    OpenRouter provides a unified API to access hundreds of AI models through a single endpoint.
+    It normalizes schemas across models and providers, handles fallbacks, and optimizes for cost and performance.
+    This documentation covers authentication, endpoints, parameters, and schemas for using the OpenRouter API.
+  contact:
+    name: OpenRouter Support
+    url: https://openrouter.ai/contact
+    email: support@openrouter.ai
+servers:
+  - url: https://openrouter.ai/api/v1
+    description: OpenRouter API v1 Server
+
+# Global security definition - requires Bearer token authentication for most endpoints
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Completions
+    description: Operations for generating model completions (chat format).
+  - name: Completions (Legacy)
+    description: Operations for generating text-only completions (legacy format).
+  - name: Generations
+    description: Operations for retrieving metadata about past generations.
+  - name: Models
+    description: Operations for listing models and their providers.
+  - name: Billing
+    description: Operations related to credits and payments.
+  - name: Authentication
+    description: Operations for user authentication and API key exchange.
+  - name: API Keys
+    description: Operations for managing the currently authenticated API key.
+  - name: API Keys (Provisioning)
+    description: Operations for programmatically managing API keys (requires a Provisioning Key).
+
+paths:
+  /chat/completions:
+    post:
+      tags:
+        - Completions
+      summary: Send a chat completion request
+      description: >-
+        Send a chat completion request to a selected model using the OpenAI-compatible message format.
+        Supports text, multimodal input (images), tool calling, streaming, reasoning tokens, and provider routing options.
+      operationId: postChatCompletions
+      parameters:
+        - name: HTTP-Referer
+          in: header
+          description: Optional. Your site URL for rankings on openrouter.ai.
+          required: false
+          schema:
+            type: string
+            format: url
+        - name: X-Title
+          in: header
+          description: Optional. Your site name for rankings on openrouter.ai.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Successful completion. Response format depends on the `stream` parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionChunk'
+        '400':
+          description: Bad Request (e.g., invalid parameters, schema errors).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '401':
+          description: Unauthorized (e.g., invalid API key).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '402':
+          description: Payment Required (Insufficient credits).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '403':
+          description: Forbidden (e.g., content moderation flag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '408':
+          description: Request Timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '429':
+          description: Too Many Requests (Rate Limited).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '502':
+          description: Bad Gateway (Model provider error or downtime).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '503':
+          description: Service Unavailable (No suitable provider found based on routing).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /completions:
+    post:
+      tags:
+        - Completions (Legacy)
+      summary: Send a text-only completion request (Legacy)
+      description: Sends a completion request using the legacy text-only prompt format.
+      operationId: postCompletions
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletionRequest'
+      responses:
+        '200':
+          description: Successful completion.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionResponse'
+        # Include standard error responses 400, 401, 402, etc. similar to /chat/completions
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /generation:
+    get:
+      tags:
+        - Generations
+      summary: Get metadata about a specific generation request
+      description: Retrieves detailed metadata, including cost and token counts (native and normalized), for a specific generation using its ID.
+      operationId: getGeneration
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: The ID of the generation to retrieve.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully retrieved generation metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/GenerationData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Generation not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /models:
+    get:
+      tags:
+        - Models
+      summary: List available models
+      description: Returns a list of all models available through the OpenRouter API, including their details and pricing.
+      operationId: listModels
+      responses:
+        '200':
+          description: Successfully retrieved the list of available models.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelData'
+
+  /models/{author}/{slug}/endpoints:
+    get:
+      tags:
+        - Models
+      summary: List endpoints (providers) for a specific model
+      description: Returns details about a specific model, including the providers (endpoints) that serve it and their specific configurations.
+      operationId: listModelEndpoints
+      parameters:
+        - name: author
+          in: path
+          required: true
+          description: The author/organization part of the model ID (e.g., 'openai').
+          schema:
+            type: string
+        - name: slug
+          in: path
+          required: true
+          description: The specific model name part of the model ID (e.g., 'gpt-4o').
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully retrieved the list of endpoints for the model.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ModelEndpointData'
+        '404':
+          description: Model not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /credits:
+    get:
+      tags:
+        - Billing
+      summary: Get credit balance for the authenticated user
+      description: Returns the total credits purchased and used for the authenticated user account. Note that values may be cached for up to 60 seconds.
+      operationId: getCredits
+      responses:
+        '200':
+          description: Successfully retrieved credit information.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      total_credits:
+                        type: number
+                        format: double
+                        description: Total credits purchased in USD.
+                      total_usage:
+                        type: number
+                        format: double
+                        description: Total credits used in USD.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /credits/coinbase:
+    post:
+      tags:
+        - Billing
+      summary: Create a Coinbase Commerce charge for crypto payments
+      description: Creates a Coinbase Commerce charge to allow purchasing credits with cryptocurrency. Returns transaction details needed for on-chain payment.
+      operationId: createCoinbaseCharge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoinbaseChargeRequest'
+      responses:
+        '200':
+          description: Successfully created Coinbase charge.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CoinbaseChargeResponseData' # Adjusted reference
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/keys:
+    post:
+      tags:
+        - Authentication
+      summary: Exchange OAuth PKCE code for an API key
+      description: Exchanges an authorization code obtained from the OAuth PKCE flow for a user-controlled OpenRouter API key. This endpoint does not require Bearer token authentication.
+      operationId: exchangeAuthCode
+      security: [] # Override global security for this specific endpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+              properties:
+                code:
+                  type: string
+                  description: The authorization code received from the OAuth redirect.
+                code_verifier:
+                  type: string
+                  description: The code verifier if `code_challenge` was used in the authorization request.
+                code_challenge_method:
+                  type: string
+                  description: The method used to generate the code challenge.
+                  enum: [S256, plain]
+      responses:
+        '200':
+          description: Successfully exchanged code for an API key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    description: The API key to use for subsequent OpenRouter requests.
+                  user_id:
+                    type: string
+                    description: User ID associated with the API key.
+        '400':
+          description: Bad Request (e.g., invalid code, missing verifier if required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '403':
+          description: Forbidden (e.g., invalid code verifier or challenge method mismatch).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '405':
+          description: Method Not Allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /key: # Path used in API Keys section docs
+    get:
+      tags:
+        - API Keys
+      summary: Get information about the current API key
+      description: Retrieves information about the API key used for the current authentication session, including limits, usage, and rate limits.
+      operationId: getCurrentKey
+      responses:
+        '200':
+          description: Successfully retrieved API key information.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/KeyInfoData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '405':
+          description: Method Not Allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+        '500':
+          description: Internal Server Error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /keys:
+    get:
+      tags:
+        - API Keys (Provisioning)
+      summary: List all API keys for the account (requires Provisioning Key)
+      description: Returns a list of API keys associated with the account. Requires authentication using a Provisioning API key. Supports pagination and filtering.
+      operationId: listApiKeys
+      parameters:
+        - name: offset
+          in: query
+          description: Offset for paginating through the list of API keys.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 0
+        - name: include_disabled
+          in: query
+          description: Whether to include disabled API keys in the response.
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Successfully retrieved the list of API keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKeyData'
+        '401':
+          $ref: '#/components/responses/Unauthorized' # Indicate if not a provisioning key
+        '403':
+           description: Forbidden (Authenticated key is not a Provisioning Key).
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponseWrapper'
+
+    post:
+      tags:
+        - API Keys (Provisioning)
+      summary: Create a new API key (requires Provisioning Key)
+      description: Creates a new API key for the account. Requires authentication using a Provisioning API key.
+      operationId: createApiKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  description: A display name for the API key (user-facing).
+                label:
+                   type: string
+                   description: A label for the API key (programmatic identifier, e.g., 'customer-123').
+                   nullable: true
+                limit:
+                  type: number
+                  format: double
+                  description: Optional credit limit in USD for the key. Null or 0 means unlimited.
+                  nullable: true
+      responses:
+        '200':
+          description: Successfully created the API key. The response includes the new key string.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/ApiKeyData'
+                      - type: object
+                        properties:
+                          key: # The actual key string is returned on creation
+                            type: string
+                            description: The newly created API key string. Store this securely.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+           description: Forbidden (Authenticated key is not a Provisioning Key).
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponseWrapper'
+
+  /keys/{hash}:
+    get:
+      tags:
+        - API Keys (Provisioning)
+      summary: Get details for a specific API key (requires Provisioning Key)
+      description: Returns details about a specific API key identified by its hash. Requires authentication using a Provisioning API key.
+      operationId: getApiKey
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The hash identifier of the API key.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully retrieved API key details.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ApiKeyData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+           description: Forbidden (Authenticated key is not a Provisioning Key).
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponseWrapper'
+        '404':
+          description: API Key not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+    patch:
+      tags:
+        - API Keys (Provisioning)
+      summary: Update a specific API key (requires Provisioning Key)
+      description: Updates properties (name, limit, disabled status) of an existing API key identified by its hash. Requires authentication using a Provisioning API key.
+      operationId: updateApiKey
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The hash identifier of the API key to update.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: New display name for the key.
+                label:
+                   type: string
+                   description: New label for the key.
+                   nullable: true
+                limit:
+                  type: number
+                  format: double
+                  description: New credit limit in USD for the key. Use null to remove the limit.
+                  nullable: true
+                disabled:
+                  type: boolean
+                  description: Whether the key should be disabled.
+      responses:
+        '200':
+          description: Successfully updated the API key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ApiKeyData'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+           description: Forbidden (Authenticated key is not a Provisioning Key).
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponseWrapper'
+        '404':
+          description: API Key not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+    delete:
+      tags:
+        - API Keys (Provisioning)
+      summary: Delete a specific API key (requires Provisioning Key)
+      description: Deletes an API key identified by its hash. This action is irreversible. Requires authentication using a Provisioning API key.
+      operationId: deleteApiKey
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The hash identifier of the API key to delete.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully deleted the API key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      success:
+                        type: boolean
+                        description: Indicates if the deletion was successful.
+                        example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+           description: Forbidden (Authenticated key is not a Provisioning Key).
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponseWrapper'
+        '404':
+          description: API Key not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseWrapper'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+      description: >-
+        Bearer token authentication. Obtain your API key from [OpenRouter settings](https://openrouter.ai/keys).
+        Include it in the Authorization header as `Bearer <YOUR_OPENROUTER_API_KEY>`.
+
+  schemas:
+    # --- Chat Completion Schemas ---
+    ChatCompletionRequest:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+          description: A list of messages comprising the conversation so far.
+        prompt:
+          type: string
+          description: Legacy text prompt. Use `messages` instead for chat models. `messages` OR `prompt` is required.
+        model:
+          type: string
+          description: The ID of the model to use (e.g., 'openai/gpt-4o'). If unspecified, the user's default model is used. Can include variants like ':free', ':nitro', ':online'.
+          example: "openai/gpt-4o"
+        response_format:
+          oneOf:
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: [json_object]
+                  description: Forces the model output to be a valid JSON object. Instruct the model via messages as well.
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: [json_schema]
+                json_schema:
+                  $ref: '#/components/schemas/JsonSchemaFormat'
+              description: Forces the model output to conform to a specific JSON schema.
+          description: An object specifying the format that the model must output. Check model compatibility.
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Up to 4 sequences where the API will stop generating further tokens.
+        stream:
+          type: boolean
+          default: false
+          description: If set, partial message deltas will be sent as server-sent events.
+        max_tokens:
+          type: integer
+          description: The maximum number of tokens to generate in the completion. Range [1, context_length).
+          minimum: 1
+        temperature:
+          type: number
+          format: double
+          description: Sampling temperature. Higher values make the output more random. Range [0, 2].
+          minimum: 0.0
+          maximum: 2.0
+          default: 1.0
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+          description: A list of tools the model may call.
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [none, auto, required]
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: [function]
+                function:
+                  type: object
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+                      description: The name of the function to call.
+              required: [type, function]
+          description: Controls which (if any) tool is called by the model.
+        seed:
+          type: integer
+          description: If specified, attempts to sample deterministically. Determinism is not guaranteed.
+        top_p:
+          type: number
+          format: double
+          description: Nucleus sampling parameter. Range (0, 1].
+          minimum: 0.0
+          exclusiveMinimum: true
+          maximum: 1.0
+          default: 1.0
+        top_k:
+          type: integer
+          description: Top-k sampling parameter. Range [1, Infinity). Not available for all models (e.g., OpenAI).
+          minimum: 1
+          default: 1
+        frequency_penalty:
+          type: number
+          format: double
+          description: Penalty for repeating tokens based on frequency. Range [-2, 2].
+          minimum: -2.0
+          maximum: 2.0
+          default: 0.0
+        presence_penalty:
+          type: number
+          format: double
+          description: Penalty for repeating tokens based on presence. Range [-2, 2].
+          minimum: -2.0
+          maximum: 2.0
+          default: 0.0
+        repetition_penalty:
+          type: number
+          format: double
+          description: Penalty to reduce token repetition from input. Range (0, 2].
+          minimum: 0.0
+          exclusiveMinimum: true
+          maximum: 2.0
+          default: 1.0
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+            minimum: -100
+            maximum: 100
+          description: Modify the likelihood of specified tokens appearing. Maps token IDs (integer keys as strings) to bias values [-100, 100].
+        logprobs:
+            type: boolean
+            description: Whether to return log probabilities of the output tokens.
+        top_logprobs:
+          type: integer
+          description: Number of most likely tokens to return at each position, with log probabilities. Requires `logprobs` to be true. Range [0, 20].
+          minimum: 0
+          maximum: 20
+        min_p:
+          type: number
+          format: double
+          description: Minimum probability relative to the most likely token. Range [0, 1].
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+        top_a:
+          type: number
+          format: double
+          description: Alternative top sampling parameter based on probability distribution shape. Range [0, 1].
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+        prediction:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [content]
+            content:
+              type: string
+          description: Provide a predicted output to potentially reduce latency (OpenAI specific).
+        transforms:
+          type: array
+          items:
+            type: string
+            enum: [middle-out] # Add others if they exist
+          description: OpenRouter-specific prompt transformations (e.g., 'middle-out' for context compression).
+          example: ["middle-out"]
+        models:
+          type: array
+          items:
+            type: string
+          description: >-
+            OpenRouter-specific. A list of fallback model IDs to try if the primary `model` fails.
+            Requests are priced based on the model ultimately used.
+          example: ["anthropic/claude-3.5-sonnet", "gryphe/mythomax-l2-13b"]
+        route:
+          type: string
+          enum: [fallback] # Add others if they exist
+          description: OpenRouter-specific routing strategy. Currently only 'fallback' seems documented via `models` array.
+        provider:
+          $ref: '#/components/schemas/ProviderPreferences'
+        reasoning:
+          $ref: '#/components/schemas/ReasoningConfig'
+        max_price:
+          type: object
+          properties:
+            prompt:
+              type: number
+              format: double
+              description: Max price per million prompt tokens in USD.
+            completion:
+              type: number
+              format: double
+              description: Max price per million completion tokens in USD.
+            request:
+              type: number
+              format: double
+              description: Max price per request in USD (for providers with per-request pricing).
+            image:
+              type: number
+              format: double
+              description: Max price per image in USD.
+          description: Maximum acceptable provider pricing. Often used with provider sorting.
+        modalities:
+          type: array
+          items:
+            type: string
+            enum: [image, text]
+          description: Specify modalities for image generation requests (e.g., ["image", "text"]).
+      required:
+        - messages
+        - prompt
+
+    ChatCompletionResponse:
+      type: object
+      required: [id, choices, created, model, object]
+      properties:
+        id:
+          type: string
+          description: A unique identifier for the completion generation.
+          example: "gen-xxxxxxxxxxxxxx"
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatChoice'
+        created:
+          type: integer
+          format: int64 # Unix timestamp
+          description: The Unix timestamp (in seconds) of when the generation was created.
+        model:
+          type: string
+          description: The model ID used for the generation. This reflects the final model used, considering fallbacks.
+          example: "openai/gpt-4o"
+        object:
+          type: string
+          enum: [chat.completion, text_completion] # Based on OpenAI spec, though doc only shows chat.completion
+          description: The object type, always 'chat.completion' for chat requests.
+        system_fingerprint:
+          type: string
+          description: This fingerprint represents the backend configuration that the model runs with. Can be used by developers to track changes. Present only if the provider supports it.
+          nullable: true
+        usage:
+          $ref: '#/components/schemas/ResponseUsage'
+        annotations: # Added based on Web Search section
+          type: array
+          items:
+             $ref: '#/components/schemas/Annotation'
+          description: Web search citations or other annotations related to the response content.
+
+    ChatCompletionChunk:
+      type: object
+      description: Represents a chunk of data in a streaming response.
+      properties:
+        id:
+          type: string
+          description: A unique identifier for the completion generation.
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamingChatChoice'
+        created:
+          type: integer
+          format: int64
+          description: The Unix timestamp (in seconds) of when the generation was created.
+        model:
+          type: string
+          description: The model ID used for the generation.
+        object:
+          type: string
+          enum: [chat.completion.chunk]
+          description: The object type, always 'chat.completion.chunk' for streaming chat requests.
+        system_fingerprint:
+          type: string
+          nullable: true
+        usage:
+           $ref: '#/components/schemas/ResponseUsage' # Usage is sent in the *last* chunk
+
+    ChatChoice:
+      type: object
+      description: A single choice generated by the model. Format depends on whether streaming was enabled.
+      properties:
+        # --- Non-Streaming ---
+        message:
+           $ref: '#/components/schemas/ResponseMessage'
+        # --- Streaming ---
+        delta:
+           $ref: '#/components/schemas/DeltaMessage'
+        # --- Common ---
+        finish_reason:
+          type: string
+          nullable: true
+          enum: [stop, length, tool_calls, content_filter, error] # Normalized reasons
+          description: >-
+            The reason the model stopped generating tokens.
+            Normalized values: 'stop', 'length', 'tool_calls', 'content_filter', 'error'.
+            Null if generation is ongoing (streaming).
+        native_finish_reason:
+           type: string
+           nullable: true
+           description: The raw finish reason string returned by the model provider.
+        error:
+          $ref: '#/components/schemas/InlineErrorResponse'
+        logprobs: # Added based on parameter docs
+          nullable: true
+          type: object
+          properties:
+            content:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Logprob'
+          description: Log probability information for the choice.
+
+
+    StreamingChatChoice:
+      type: object
+      description: A single choice delta in a streaming response.
+      properties:
+        delta:
+          $ref: '#/components/schemas/DeltaMessage'
+        finish_reason:
+          type: string
+          nullable: true
+          enum: [stop, length, tool_calls, content_filter, error]
+        native_finish_reason:
+           type: string
+           nullable: true
+        error:
+          $ref: '#/components/schemas/InlineErrorResponse'
+        logprobs:
+          nullable: true
+          type: object
+          properties:
+            content:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Logprob'
+
+    Message:
+      type: object
+      description: Represents a message in the conversation.
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+          description: The role of the message author.
+        content:
+          oneOf:
+            - type: string
+              description: The text content of the message.
+            - type: array
+              items:
+                $ref: '#/components/schemas/ContentPart'
+              description: An array of content parts (text and images), currently only supported for `user` role.
+          nullable: true # Content can be null for assistant messages with tool calls
+        name:
+          type: string
+          description: >-
+            Optional name for the participant. For non-OpenAI models, this might be prepended to the content.
+            Also used to identify the function in tool role messages.
+        tool_call_id:
+          type: string
+          description: Required identifier when `role` is `tool`.
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+          description: The tool calls generated by the model, included in `assistant` messages.
+
+    ResponseMessage:
+        allOf:
+          - $ref: '#/components/schemas/Message'
+          - type: object
+            properties:
+              reasoning: # Added from Reasoning Tokens docs
+                type: string
+                nullable: true
+                description: The reasoning or thinking steps taken by the model, if supported and not excluded.
+
+
+    DeltaMessage:
+      type: object
+      description: A delta message representation used in streamed responses. Fields are optional.
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+          nullable: true
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamingToolCall' # Reference streaming version
+        reasoning: # Added from Reasoning Tokens docs
+            type: string
+            nullable: true
+            description: A chunk of the reasoning or thinking steps.
+
+    ContentPart:
+      type: object
+      discriminator:
+          propertyName: type
+      oneOf:
+        - $ref: '#/components/schemas/TextContentPart'
+        - $ref: '#/components/schemas/ImageContentPart'
+        - $ref: '#/components/schemas/CacheControlContentPart' # For Anthropic Caching
+
+
+    TextContentPart:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [text]
+        text:
+          type: string
+
+    ImageContentPart:
+      type: object
+      required: [type, image_url]
+      properties:
+        type:
+          type: string
+          enum: [image_url]
+        image_url:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              description: URL of the image or a base64 encoded image data URI (e.g., 'data:image/jpeg;base64,...').
+              example: "https://example.com/image.jpg"
+            detail:
+              type: string
+              enum: [auto, low, high]
+              default: auto
+              description: Specifies the detail level of the image.
+
+    CacheControlContentPart:
+       type: object
+       required: [type, text, cache_control]
+       properties:
+         type:
+           type: string
+           enum: [text] # This part is still text, but includes cache control
+         text:
+           type: string
+           description: The text content to potentially cache.
+         cache_control:
+           type: object
+           required: [type]
+           properties:
+             type:
+               type: string
+               enum: [ephemeral] # Currently only ephemeral is documented for Anthropic
+           description: Cache control directive for this content part (Anthropic-specific).
+
+    Tool:
+      type: object
+      required: [type, function]
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionDescription'
+
+    FunctionDescription:
+      type: object
+      required: [name, parameters]
+      properties:
+        description:
+          type: string
+          description: A description of what the function does, used by the model.
+        name:
+          type: string
+          description: The name of the function to be called.
+        parameters:
+          type: object
+          description: A JSON Schema object describing the parameters the function accepts.
+          example: {"type": "object", "properties": {"location": {"type": "string"}, "unit": {"type": "string", "enum": ["C", "F"]}}, "required": ["location"]}
+
+    ToolCall:
+      type: object
+      required: [id, type, function]
+      properties:
+        id:
+          type: string
+          description: The ID of the tool call.
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionCall'
+
+    FunctionCall:
+      type: object
+      required: [name, arguments]
+      properties:
+        name:
+          type: string
+          description: The name of the function that was called.
+        arguments:
+          type: string # Arguments are returned as a JSON string
+          description: The arguments passed to the function, as a JSON string.
+
+    StreamingToolCall:
+      type: object
+      description: Represents a tool call delta in a streaming response.
+      properties:
+        index: # Index appears in OpenAI streaming spec
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/StreamingFunctionCall' # Reference streaming version
+
+    StreamingFunctionCall:
+       type: object
+       properties:
+         name:
+           type: string
+         arguments: # Arguments arrive chunked as strings
+           type: string
+
+    ResponseUsage:
+      type: object
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Number of tokens in the prompt (including images and tools). Uses a normalized count (GPT-4o tokenizer).
+        completion_tokens:
+          type: integer
+          description: Number of tokens in the generated completion. Uses a normalized count (GPT-4o tokenizer).
+        total_tokens:
+          type: integer
+          description: Total number of tokens used in the request (prompt + completion). Normalized count.
+
+    InlineErrorResponse:
+      type: object
+      description: Error details potentially included within a choice.
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: HTTP status code corresponding to the error.
+        message:
+          type: string
+          description: A human-readable description of the error.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional error details, potentially including provider-specific info or moderation results.
+
+    ErrorResponseWrapper:
+      type: object
+      properties:
+        error:
+           $ref: '#/components/schemas/InlineErrorResponse' # Reuse the same structure
+
+    ModerationErrorMetadata:
+       type: object
+       description: Metadata included when an input is flagged by moderation.
+       properties:
+         reasons:
+           type: array
+           items:
+             type: string
+           description: List of reasons why the input was flagged.
+         flagged_input:
+           type: string
+           description: The flagged text segment (potentially truncated).
+         provider_name:
+           type: string
+           description: Name of the provider that performed the moderation.
+         model_slug:
+           type: string
+
+    ProviderErrorMetadata:
+        type: object
+        description: Metadata included when a model provider encounters an error.
+        properties:
+          provider_name:
+            type: string
+            description: Name of the provider that encountered the error.
+          raw:
+            type: object
+            additionalProperties: true
+            description: The raw error object or message from the provider.
+
+    ProviderPreferences:
+      type: object
+      description: Controls how requests are routed across providers for a specific model.
+      properties:
+        order:
+          type: array
+          items:
+            type: string
+          description: List of provider names (case-insensitive) to try in the specified order. Disables default load balancing.
+          example: ["Anthropic", "OpenAI", "Together"]
+        allow_fallbacks:
+          type: boolean
+          default: true
+          description: If `order` is specified, setting this to false prevents falling back to providers not in the `order` list. If `order` is not specified, setting this to false prevents falling back beyond the top provider determined by `sort` or default load balancing.
+        require_parameters:
+          type: boolean
+          default: false
+          description: If true, only routes to providers that support *all* parameters included in the request (e.g., `response_format`, specific sampling params).
+        data_collection:
+          type: string
+          enum: [allow, deny]
+          default: allow
+          description: Filters providers based on data collection policies. 'deny' excludes providers known to store or train on data.
+        ignore:
+          type: array
+          items:
+            type: string
+          description: List of provider names (case-insensitive) to exclude from routing for this request. Merged with account-level ignored providers.
+          example: ["Azure"]
+        quantizations:
+          type: array
+          items:
+            type: string
+            enum: [int4, int8, fp4, fp6, fp8, fp16, bf16, fp32, unknown]
+          description: Filters providers based on the quantization level of the model they offer.
+          example: ["fp8", "fp16"]
+        sort:
+           type: string
+           enum: [price, throughput, latency]
+           description: Explicitly sort providers by the specified attribute, disabling default load balancing. 'price' prioritizes lowest cost, 'throughput' prioritizes highest tokens/sec, 'latency' prioritizes lowest time-to-first-token.
+
+    ReasoningConfig:
+      type: object
+      description: Configuration for controlling model reasoning/thinking tokens.
+      properties:
+        effort:
+          type: string
+          enum: [low, medium, high]
+          description: "Sets reasoning effort level (OpenAI-style). Mutually exclusive with `max_tokens`. Approximate token budgets: low (20%), medium (50%), high (80%) of `max_tokens`."
+        max_tokens:
+          type: integer
+          description: Sets a specific maximum number of tokens for reasoning (Anthropic-style). Mutually exclusive with `effort`. Will be mapped to effort levels for models supporting only `effort`.
+        exclude:
+          type: boolean
+          default: false
+          description: If true, reasoning tokens are used internally by the model but not included in the response `reasoning` field.
+
+    JsonSchemaFormat:
+        type: object
+        required: [name, schema]
+        properties:
+          name:
+            type: string
+            description: A name for the schema, used internally by the model.
+          strict:
+            type: boolean
+            default: false # Documentation example uses true, but default might be false
+            description: If true, the model must strictly adhere to the schema. Highly recommended.
+          description:
+             type: string
+             description: Optional description of the schema's purpose.
+          schema:
+            type: object
+            description: The JSON Schema object itself.
+            additionalProperties: true # Allow any valid JSON schema structure
+
+
+    Annotation: # Based on Web Search section
+       type: object
+       required: [type]
+       properties:
+         type:
+           type: string
+           enum: [url_citation] # Add others if documented
+           description: The type of annotation.
+         url_citation:
+           type: object
+           properties:
+             url:
+               type: string
+               format: url
+             title:
+               type: string
+             content:
+               type: string
+               description: Content snippet from the cited URL (added by OpenRouter if available).
+             start_index:
+               type: integer
+             end_index:
+               type: integer
+
+    Logprob: # Based on OpenAI spec, inferred from parameter docs
+      type: object
+      properties:
+        token:
+          type: string
+          description: The token.
+        logprob:
+          type: number
+          format: float
+          description: The log probability of this token.
+        bytes:
+          type: array
+          items:
+            type: integer
+          nullable: true
+          description: A list of integers representing the UTF-8 bytes representation of the token. Useful in instances where characters are represented by multiple tokens and their byte representations must be combined to generate the correct text representation. Can be null if there is no bytes representation for the token.
+        top_logprobs:
+           type: array
+           items:
+              $ref: '#/components/schemas/TopLogprob'
+           description: List of the most likely tokens and their log probs at this position. Null if `top_logprobs` was not requested.
+
+
+    TopLogprob: # Based on OpenAI spec
+      type: object
+      properties:
+        token:
+          type: string
+        logprob:
+          type: number
+          format: float
+        bytes:
+          type: array
+          items:
+            type: integer
+          nullable: true
+
+    # --- Legacy Completion Schemas ---
+    CompletionRequest:
+      type: object
+      description: Request body for the legacy text-only completion endpoint.
+      required: [model, prompt]
+      properties:
+        model:
+          type: string
+          description: Model ID to use.
+        prompt:
+          type: string
+          description: The text prompt to complete.
+        stream:
+          type: boolean
+          default: false
+        max_tokens:
+          type: integer
+        temperature:
+          type: number
+          format: double
+        seed:
+          type: integer
+        top_p:
+          type: number
+          format: double
+        top_k:
+          type: integer
+        frequency_penalty:
+          type: number
+          format: double
+        presence_penalty:
+          type: number
+          format: double
+        repetition_penalty:
+          type: number
+          format: double
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+        logprobs:
+            type: boolean
+        top_logprobs:
+          type: integer
+        min_p:
+          type: number
+          format: double
+        top_a:
+          type: number
+          format: double
+        transforms:
+          type: array
+          items:
+            type: string
+        models:
+          type: array
+          items:
+            type: string
+        provider:
+          $ref: '#/components/schemas/ProviderPreferences'
+        reasoning:
+          $ref: '#/components/schemas/ReasoningConfig'
+
+    CompletionResponse:
+      type: object
+      description: Response body for the legacy text-only completion endpoint.
+      properties:
+        id:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              index:
+                type: integer
+              finish_reason:
+                type: string
+        usage: # Added based on standard OpenAI structure, although not explicitly in legacy example
+          $ref: '#/components/schemas/ResponseUsage'
+        model: # Added based on standard structure
+          type: string
+
+    # --- Generation Metadata Schemas ---
+    GenerationData:
+      type: object
+      description: Detailed metadata for a single generation request.
+      properties:
+        id:
+          type: string
+        total_cost:
+          type: number
+          format: double
+          description: Final cost of the generation in USD, after discounts/fees.
+        created_at:
+          type: string
+          format: date-time
+        model:
+          type: string
+          description: The final model used for the generation.
+        origin:
+          type: string
+          description: Source of the request (e.g., 'api', 'chat').
+        usage:
+          type: number
+          format: double
+          description: Cost before discounts/fees in USD. Might differ from total_cost due to caching or BYOK fees.
+        is_byok:
+          type: boolean
+          description: True if the request used a Bring-Your-Own-Key provider.
+        upstream_id:
+          type: string
+          nullable: true
+          description: ID assigned by the upstream provider, if available.
+        cache_discount:
+          type: number
+          format: double
+          description: >-
+            Amount discounted due to prompt caching in USD. Can be negative for cache writes (Anthropic)
+            or positive for cache reads (cost saving).
+        app_id:
+          type: integer
+          nullable: true
+          description: Internal application identifier.
+        streamed:
+          type: boolean
+        cancelled:
+          type: boolean
+        provider_name:
+          type: string
+          nullable: true
+          description: Name of the provider that fulfilled the request.
+        latency:
+          type: number # Assuming milliseconds or seconds? Docs say integer 1, likely example. Use number.
+          format: double
+          description: Time to first token in seconds.
+        moderation_latency:
+          type: number
+          format: double
+          description: Time spent on moderation checks in seconds.
+        generation_time:
+          type: number
+          format: double
+          description: Total time taken for the generation in seconds.
+        finish_reason:
+          type: string
+          nullable: true
+          description: Normalized finish reason.
+        native_finish_reason:
+          type: string
+          nullable: true
+          description: Raw finish reason from the provider.
+        tokens_prompt:
+          type: integer
+          description: Normalized prompt token count (GPT-4o tokenizer).
+        tokens_completion:
+          type: integer
+          description: Normalized completion token count (GPT-4o tokenizer).
+        native_tokens_prompt:
+          type: integer
+          nullable: true
+          description: Prompt token count using the model's native tokenizer.
+        native_tokens_completion:
+          type: integer
+          nullable: true
+          description: Completion token count using the model's native tokenizer.
+        native_tokens_reasoning:
+          type: integer
+          nullable: true
+          description: Reasoning token count using the model's native tokenizer.
+        num_media_prompt:
+          type: integer
+          nullable: true
+          description: Number of media items (e.g., images) in the prompt.
+        num_media_completion:
+          type: integer
+          nullable: true
+          description: Number of media items (e.g., images) in the completion.
+        num_search_results:
+           type: integer
+           nullable: true
+           description: Number of web search results used, if applicable.
+
+    # --- Model Listing Schemas ---
+    ModelData:
+      type: object
+      description: Information about a specific model available on OpenRouter.
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the model (e.g., 'openai/gpt-4o').
+        name:
+          type: string
+          description: User-friendly name of the model.
+        created:
+           type: integer
+           format: int64
+           description: Unix timestamp of model creation or addition date.
+        description:
+          type: string
+          nullable: true
+        architecture:
+          $ref: '#/components/schemas/ModelArchitecture'
+        top_provider:
+          $ref: '#/components/schemas/TopProviderInfo'
+        pricing:
+          $ref: '#/components/schemas/ModelPricing'
+        context_length:
+          type: integer
+          description: Maximum context length in tokens supported by the model.
+        per_request_limits:
+          type: object
+          additionalProperties: true # Structure not fully defined in example
+          description: Any specific per-request limits imposed by the provider.
+          nullable: true
+
+    ModelArchitecture:
+      type: object
+      properties:
+        input_modalities:
+          type: array
+          items:
+            type: string
+            enum: [text, image, audio, video] # Based on common modalities
+        output_modalities:
+          type: array
+          items:
+            type: string
+            enum: [text, image, audio, video]
+        tokenizer:
+          type: string
+          description: Type of tokenizer used (e.g., 'GPT', 'Claude', 'Llama').
+        instruct_type:
+           type: string
+           nullable: true
+           description: Type of instruction following format used, if applicable.
+
+    TopProviderInfo:
+      type: object
+      properties:
+        is_moderated:
+          type: boolean
+          description: Indicates if the top provider for this model applies moderation.
+        # Add other relevant top provider fields if documented elsewhere
+
+    ModelPricing:
+      type: object
+      description: Pricing details for the model (typically lowest across providers). Prices are per token or per item in USD. Stored as strings to avoid precision issues.
+      properties:
+        prompt:
+          type: string
+          format: decimal # Representing a decimal value as string
+          description: Cost per prompt token.
+          example: "0.0000007"
+        completion:
+          type: string
+          format: decimal
+          description: Cost per completion token.
+          example: "0.0000007"
+        image:
+          type: string
+          format: decimal
+          description: Cost per image generated or processed.
+          example: "0.02"
+        request:
+          type: string
+          format: decimal
+          description: Cost per request (for models with per-request pricing).
+          example: "0.001"
+        input_cache_read: # Added from Caching docs
+          type: string
+          format: decimal
+          description: Cost per cached input token read.
+        input_cache_write: # Added from Caching docs
+          type: string
+          format: decimal
+          description: Cost per cached input token written.
+        web_search: # Added from Web Search docs
+           type: string
+           format: decimal
+           description: Cost per web search result used.
+        internal_reasoning: # Added from Pricing example
+           type: string
+           format: decimal
+           description: Cost per reasoning/thinking token.
+
+    # --- Model Endpoint Listing Schemas ---
+    ModelEndpointData:
+      type: object
+      description: Detailed information about a model, including its available provider endpoints.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        created:
+           type: number # Example shows 1.1, likely timestamp? Use number.
+           format: double
+        description:
+          type: string
+          nullable: true
+        architecture:
+          $ref: '#/components/schemas/ModelArchitecture' # Reusing schema
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/EndpointDetail'
+
+    EndpointDetail:
+      type: object
+      description: Details about a specific provider endpoint for a model.
+      properties:
+        name:
+          type: string
+          description: Name of the provider serving this endpoint.
+        context_length:
+          type: number # Example shows 1.1, use number.
+          format: double
+          description: Context length supported by this specific provider endpoint.
+        pricing:
+          $ref: '#/components/schemas/EndpointPricing'
+        provider_name:
+           type: string
+           description: Canonical name of the provider.
+        supported_parameters:
+           type: array
+           items:
+             type: string
+           description: List of specific parameters supported by this provider endpoint (e.g., 'tools', 'response_format:json_object', 'structured_outputs').
+
+    EndpointPricing:
+      type: object
+      description: Pricing details for a specific provider endpoint. Prices are per token/item in USD (as strings).
+      properties:
+        request:
+          type: string
+          format: decimal
+        image:
+          type: string
+          format: decimal
+        prompt:
+          type: string
+          format: decimal
+        completion:
+          type: string
+          format: decimal
+        # Add other pricing fields like cache, web_search if applicable per-endpoint
+
+    # --- Billing Schemas ---
+    CoinbaseChargeRequest:
+      type: object
+      required: [amount, sender, chain_id]
+      properties:
+        amount:
+          type: number
+          format: double
+          description: The amount to charge in USD. Must be within purchase limits.
+        sender:
+          type: string
+          description: The Ethereum address (hex format) that will send the transaction.
+          example: "0x9a85CB3bfd494Ea3a8C9E50aA6a3c1a7E8BACE11"
+        chain_id:
+          type: integer
+          description: The EVM chain ID for the transaction.
+          enum: [1, 137, 8453] # Ethereum, Polygon, Base (add others if supported)
+          example: 8453
+
+    CoinbaseChargeResponseData:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The unique ID for the Coinbase Commerce charge.
+        addresses:
+          type: object
+          additionalProperties:
+            type: string
+          description: Recipient addresses for different cryptocurrencies (may not be present in all responses).
+        calldata:
+          type: object
+          # Structure based on Crypto API docs example for web3_data.transfer_intent.call_data
+          description: Contains the necessary data (`web3_data`) to execute the transaction on-chain. Structure may vary. See documentation for `web3_data.transfer_intent.call_data`.
+          properties:
+              recipient_amount: { type: string }
+              deadline: { type: string }
+              recipient: { type: string }
+              recipient_currency: { type: string }
+              refund_destination: { type: string }
+              fee_amount: { type: string }
+              id: { type: string, format: 'bytes16' } # Example format
+              operator: { type: string }
+              signature: { type: string, format: 'byte' } # Example format
+              prefix: { type: string, format: 'byte' } # Example format
+          # Use additionalProperties if structure is less defined
+          # additionalProperties: true
+        chain_id:
+          type: integer
+        sender:
+          type: string
+        # Add other fields from the example like created_at, expires_at, web3_data if needed
+        web3_data:
+           type: object
+           description: Detailed data required for on-chain transaction execution via Coinbase protocol.
+           # Define further structure based on Coinbase docs if available, or use additionalProperties
+
+    # --- API Key Schemas ---
+    KeyInfoData:
+       type: object
+       description: Information about an API key.
+       properties:
+         label:
+           type: string
+           description: User-defined label for the key.
+         usage:
+           type: number
+           format: double
+           description: Credits used by this key in USD.
+         limit:
+           type: number
+           format: double
+           nullable: true
+           description: Credit limit for the key in USD, or null if unlimited.
+         limit_remaining:
+             type: number
+             format: double
+             nullable: true
+             description: Remaining credits within the limit (limit - usage). Null if limit is null.
+         is_free_tier:
+           type: boolean
+           description: Whether the user associated with the key has only used free credits.
+         is_provisioning_key:
+             type: boolean
+             description: True if this key is a Provisioning Key (used for key management API).
+         rate_limit:
+           $ref: '#/components/schemas/RateLimitInfo'
+
+    RateLimitInfo:
+      type: object
+      properties:
+        requests:
+          type: integer
+          description: Number of requests allowed.
+        interval:
+          type: string
+          description: Time interval for the rate limit (e.g., '10s', '1m').
+
+    ApiKeyData:
+       type: object
+       description: Data structure representing an API key, typically returned by provisioning endpoints.
+       properties:
+         name:
+           type: string
+           description: User-defined display name for the key.
+         label:
+           type: string
+           nullable: true
+           description: User-defined label (programmatic identifier).
+         limit:
+           type: number
+           format: double
+           nullable: true
+           description: Credit limit in USD, or null if unlimited.
+         disabled:
+           type: boolean
+           description: Whether the key is currently disabled.
+         created_at:
+           type: string
+           format: date-time
+         updated_at:
+           type: string
+           format: date-time
+         hash:
+           type: string
+           description: Unique hash identifier for the key (used in URL paths for management).
+         key: # Only present in 'Create API Key' response
+           type: string
+           description: The actual API key string (only returned on creation).
+         usage: # Added based on /key response structure, might be present here too
+           type: number
+           format: double
+           description: Credits used by this key in USD (might be 0 for newly created keys).
+
+
+  responses: # Reusable error responses
+    BadRequest:
+      description: Bad Request (e.g., invalid parameters).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    Unauthorized:
+      description: Unauthorized (e.g., invalid API key).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    PaymentRequired:
+      description: Payment Required (Insufficient credits).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    Forbidden:
+      description: Forbidden (e.g., content moderation).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    NotFound:
+       description: Resource not found.
+       content:
+         application/json:
+           schema:
+             $ref: '#/components/schemas/ErrorResponseWrapper'
+    TooManyRequests:
+      description: Too Many Requests (Rate Limited).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    BadGateway:
+      description: Bad Gateway (Model provider error).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseWrapper'
+    ServiceUnavailable:
+       description: Service Unavailable (No suitable provider found).
+       content:
+         application/json:
+           schema:
+             $ref: '#/components/schemas/ErrorResponseWrapper'
